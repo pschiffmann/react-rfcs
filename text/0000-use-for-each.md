@@ -287,7 +287,7 @@ Alternative names:
 
 # Appendices
 
-All code listings were tested with React v19.0.
+All code listings were tested with React v19.0 in production mode, inside `<StrictMode>`.
 
 ## Appendix A: React handling of duplicate keys in JSX
 
@@ -306,7 +306,7 @@ const effectsRun = { Z: 0, A: 0, B: 0, C: 0 };
 const cleanupsRun = { Z: 0, A: 0, B: 0, C: 0 };
 
 export function App() {
-  const [hidden, setHidden] = useState(false);
+  const [hidden, setHidden] = useState(true);
   const [n, setN] = useState(0);
   useEffect(() => {
     console.table({ effectsRun, cleanupsRun });
@@ -341,11 +341,39 @@ function Child({ value }) {
 
 </details>
 
-Listing 10-1 demonstrates how React operates under normal circumstances.
+The "show/hide" button mounts/unmounts a list of four children `A`, `B`, `C`, `Z`.
+The "Z >> 1" button moves the `Z` child to the next position in the list, wrapping around after the last position.
+
+The children run an effect after every render, and a cleanup before their next render (or unmount).
+The devtools table displays how often each effect and cleanup function is run.
+We can see that effects run once per render, and all effects are cleaned up again.
+
+To observe how React handles duplicate keys, we give the children `A`, `B` and `C` the same key.
 
 ```diff
+      {!hidden &&
+        [
+          <Child key="A" value="A" />,
+-         <Child key="B" value="B" />,
+-         <Child key="C" value="C" />,
++         <Child key="A" value="B" />,
++         <Child key="A" value="C" />,
+        ].toSpliced(n, 0, <Child key="Z" value="Z" />)}
+```
+
+https://github.com/user-attachments/assets/7636308c-ae68-4d87-b16f-326904b79a65
+
+<details>
+<summary>Listing 10-2: A React app with glitches due to duplicate keys.</summary>
+
+```tsx
+import { useEffect, useState } from "react";
+
+const effectsRun = { Z: 0, A: 0, B: 0, C: 0 };
+const cleanupsRun = { Z: 0, A: 0, B: 0, C: 0 };
+
 export function App() {
-  const [hidden, setHidden] = useState(false);
+  const [hidden, setHidden] = useState(true);
   const [n, setN] = useState(0);
   useEffect(() => {
     console.table({ effectsRun, cleanupsRun });
@@ -360,38 +388,25 @@ export function App() {
       {!hidden &&
         [
           <Child key="A" value="A" />,
--         <Child key="B" value="B" />,
--         <Child key="C" value="C" />,
-+         <Child key="A" value="B" />,
-+         <Child key="A" value="C" />,
+          <Child key="A" value="B" />,
+          <Child key="A" value="C" />,
         ].toSpliced(n, 0, <Child key="Z" value="Z" />)}
     </>
   );
 }
+
+function Child({ value }) {
+  useEffect(() => {
+    effectsRun[value]++;
+    return () => {
+      cleanupsRun[value]++;
+    };
+  });
+  return <div>{value}</div>;
+}
 ```
 
-_Listing 10-2:_
+</details>
 
-This code renders four characters `z`, `a`, `b` and `c`, together with a number indicating when each character last got rendered.
-Pressing the button moves the `z` character to the next position, wrapping around at the end.
-When clicking the button five times, the expected order of characters is:
-
-- `z1, a1, b1, c1`
-- `a2, z2, b2, c2`
-- `a3, b3, z3, c3`
-- `a4, b4, c4, z4`
-- `z5, a5, b5, c5`
-
-However, because the characters `a`, `b`, `c` all have the same key, React is unable to track them across multiple renders.
-This results in the following output after five clicks (and renders):
-
-- `z1`, `a1`, `b1`, `c1`
-- `a1`, `b1`, `a2`, `z2`, `b2`, `c2`
-- `a1`, `b1`, `a3`, `b2`, `b3`, `z3`, `c3`
-- `a1`, `b1`, `a4`, `b2`, `b4`, `c4`, `z4`
-- `a1`, `b1`, `a4`, `b2`, `b4`, `z5`, `a5`, `b5`, `c5`
-
-We can observe how React loses track of elements with duplicate keys.
-Instead of updating the existing elements, some elements become orphaned, never receiving updates again.
-To keep the total number of rendered elements at 4, React creates totally new elements instead.
-Over time, orphaned elements pile up in the DOM.
+We can see that React doesn't properly unmount all elements, and also doesn't run all effect cleanup callbacks.
+In a real application, this can lead to a UI glitches with duplicated UI elements, and possibly memory leaks due to external resources that are allocated but never cleaned up.
