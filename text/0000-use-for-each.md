@@ -4,33 +4,52 @@
 
 # Summary
 
-The `useForEach()` hook provides a sane mechanism for calling React Hooks inside loops.
+The `useForEach` hook provides a sane mechanism for calling React Hooks inside loops.
 
 # Basic example
 
-The `useForEach(keys, callback)` hook calls `callback` once for each
+The `useForEach(keys, callback)` hook calls `callback` once for each element in the `keys` iterable.
+The `callback` function is allowed to call hooks, as if it was at the top level of the component.
 
 ```ts
-import { useForEach } from "react";
+import { useEffect, useForEach, useMemo, useState } from "react";
 
 const results = useForEach(keys, (key) => {
-  const [conn, setConn] = useState(null);
+  const [state, setState] = useState(/* ... */);
+  useEffect(/* ... */);
+  return useMemo(/* ... */);
 });
 ```
 
 # Motivation
 
-React hooks deal with a single piece of data.
+Once you have learned to think in React, synchronizing a single external system with React is simple, sane and straight-forward.
+The `useSyncExternalStore` and `useEffect` hooks let you subscribe to a single external state, or allocate and clean-up a single resource, respectively.
+The hooks have clear semantics and a predictable lifecycle
+predictable, easy to reason about, colocating allocation and cleanup,
+
+`useEffect` is an excellent/genius API because predictable, colocating. We want these attributes also for managing array of external resources, but the hook doesn't work that way
+
+React provides several hooks that deal with a single piece of data.
 
 - `useEffect` synchronizes a single external resource with React.
 - `useMemo` and `useCallback` memoize a single value.
+- `useId` allocates a single document-wide unique id.
+
+But when an applications has to deal with an array of such data, React doesn't offer a canonical solution.
 
 ---
 
-Two ubiquitous concepts we encounter in almost every React application are: [lifting state up](https://react.dev/learn/sharing-state-between-components), and [synchronizing with effects](https://react.dev/learn/synchronizing-with-effects).
-But using both concepts _at the same time_ can be surprisingly difficult.
+Two ubiquitous refactoring tasks we encounter in almost every React application are: [lifting state up](https://react.dev/learn/sharing-state-between-components), and [synchronizing with effects](https://react.dev/learn/synchronizing-with-effects).
+But applying both refactorings _at the same time_ (i.e. lifting effects up) can be surprisingly difficult.
 
-## ChatRoom example
+## ChatRooms example
+
+We can observe these problems when trying to build a
+
+<img width="600" alt="image" src="https://github.com/user-attachments/assets/51aa4c0d-7cb5-442d-a4d4-2eafe7ce0f60" />
+
+Integrating a single chat room connection with a React application is pretty straight-forward, and is covered in great detail in the [Lifecycle of React Effects](https://react.dev/learn/lifecycle-of-reactive-effects) chapter.
 
 This code snippet is taken from the [Lifecycle of React Effects](https://react.dev/learn/lifecycle-of-reactive-effects) chapter, slightly altered with a `useState()` hook to give the component access to the connection object.
 
@@ -135,80 +154,174 @@ The hook can effectively be used to convert any hook that manages a single state
 import { type Key } from "react";
 
 declare function useForEach<K extends Key, T>(
-  keys: readonly K[],
+  keys: Iterable<K>,
   callback: (key: K) => T
 ): readonly T[];
 ```
 
-Call `useForEach` at the top level of your component (or inside another `useForEach` callback) to loop through an array, and call Hooks inside the loop body.
-
 ### Parameters
 
-- `keys`: The array controlling the
-- `callback`:
+- `keys`: The iterable on which the loop operates.
+  It should contain only strings and/or numbers, and should not contain duplicates.
+
+  The iterable should be a dynamic value and come from e.g. props or another hook call.
+  This is not a dependency array like for the `useMemo` or `useEffect` hooks, and should not be an array literal.
+
+- `callback`: The function that is executed for each element in `keys`.
+  It should be pure, should take a single `key` argument, and may return a value of any type.
+  It may call other React Hooks.
+
+  Hooks that are called inside `callback` use the passed-in `key` to track their state across multiple renders.
+  For example, a `useState` hook will always return the state for the same key, even if that key moves to different indexes in the `keys` iterable over multiple renders.
+  Likewise, a `useEffect` hook will compare the current dependencies with the previous dependencies of the same key to determine whether to execute again.
+
+  If `keys` contains a new key that wasn't present in the previous render, then the Hooks for that key will be newly initialized, like it normally happens during the first render of a component.
+  For example, `useMemo` will call its `calculateValue` callback, because there are no previous dependencies to compare yet.
+
+  If `keys` doesn't contain a key that was present in the previous render, then the Hooks associated with that key are "unmounted".
+  Effect hooks like `useEffect` and `useSyncExternalStore` execute their cleanup; stateful hooks like `useState`, `useMemo` and `useRef` drop all references to their values.
+  When that same key appears again in a subsequent render, then it gets newly initialized again.
 
 ### Returns
 
 A frozen array containing the results from calling `callback` with all `keys`.
 
----
+The order of values inside the results array matches the order of `keys`.
+For example, if `keys` is `[1, 2, 3]` during one render and `[2, 1, 3]` during the next, then the first results array will be `[callback(1), callback(2), callback(3)]`, and the second will be `[callback(2), callback(1), callback(3)]`.
 
-The `useForEach()` hook is called with two parameters, both mandatory:
+React will return the same array during consecutive renders, if the number of keys hasn't changed, each index in the results array contains the same value as during the previous render (as determined by `Object.is`).
+To prevent inadvertent mutations that would leak into consecutive renders, the results array is [frozen](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/freeze).
 
-1. The `keys` parameter is an array of unique strings and/or numbers.
-2. The `callback` parameter is a function that accepts a single string or number, and produces an arbitrary value.
+## Usage
 
-The `useForEach()` hook synchronously calls `callback` with each value in `keys`, and returns an array of all the callback return values.
-The `keys` array may change over time, including the length, order, and values.
-The `callback` function may call hooks, following the normal rules of hooks.
-This
+### Executing an effect for each element in an array
 
-https://react.dev/learn/rendering-lists#rules-of-keys
+To execute an effect for each element in an array, wrap the `useEffect` call with `useForEach`.
 
-## The `keys` array
+```tsx
+function ChatApp({ roomIds }) {
+  useForEach(roomIds, (roomId) => {
+    useEffect(() => {
+      const connection = createConnection(roomId);
+      return () => {
+        connection.close();
+      };
+    }, [roomId]);
+  });
+}
+```
 
-The first parameter of the `useForEach()` hook is an array of keys.
-These keys serve the same purpose as they do in JSX arrays:
-React uses the keys to track an "instance" of `callback` over the lifetime of the containing component.
+You can think of this code as being equivalent to this:
 
-The `keys` array may change over time, including the length, order, and values.
+```tsx
+function ChatApp({ roomIds }) {
+  for (const roomId of roomIds) {
+    useEffect(() => {
+      const connection = createConnection(roomId);
+      return () => {
+        connection.close();
+      };
+    }, [roomId]);
+  }
+}
+```
 
-## The `callback` function
+The second code listing (with the `for ... of` loop) is not valid React code, because it violates the [Rules of Hooks](https://react.dev/reference/rules/rules-of-hooks).
+The first code listing (with the `useForEach` hook) is valid React code, follows the Rules of Hooks, and achieves the same goal.
 
-The second parameter of the `useForEach()` hook is a callback function.
+### Associating state with keys
 
-The `keys` array must not contain duplicates, as determined by `Object.is()`.
-If any duplicates are found, `useForEach()` issues a console warning in development mode, in the same fashion as React warning about duplicate keys in JSX elements.
+If you need to store some state for each of your keys, you have two options.
+
+1. You can store the state for each key inside a separate state hook, like this:
+
+   ```tsx
+   function ChatApp({ roomIds }) {
+     const connections = useForEach(roomIds, (roomId) => {
+       const connections = useEffect(() => {
+         const [conn, setConn] = useState(null); // <- State variable that stores a single connection object.
+         const connection = createConnection(roomId);
+         setConn(connection); // <- Write to the local state variable.
+         return () => {
+           connection.close();
+           setConn(null);
+         };
+       }, [roomId]);
+       return conn; // <- Pass the local variable to the parent scope.
+     });
+   }
+   ```
+
+   Call `useState` inside the `useForEach` callback to create a local state variable.
+   Write to that state within the effect, and return the state from the callback function.
+   `useForEach` returns an array of all the callback results.
+
+   To find the connection corresponding to a specific key, check the results array at that same index:
+
+   ```tsx
+   for (let i = 0; i < roomIds.length; i++) {
+     const roomId = roomIds[i];
+     const connection = connections[i];
+   }
+   ```
+
+2. Alternatively, you can store all values in a single state variable, inside a [Map](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map) or object.
+
+   ```tsx
+   function ChatApp({ roomIds }) {
+     const [connections, setConnections] = useState({}); // <- State variable that stores all connections.
+     useForEach(roomIds, (roomId) => {
+       const connections = useEffect(() => {
+         const connection = createConnection(roomId);
+         setConnections((prev) => ({ ...prev, [roomId]: connection })); // <- Write to the component-level state.
+         return () => {
+           connection.close();
+           setConnections(([roomId]: _, ...rest) => rest);
+         };
+       }, [roomId]);
+       // No `return` needed here.
+     });
+   }
+   ```
+
+   To find the connection corresponding to a specific key, index the map by that key:
+
+   ```tsx
+   for (const roomId of roomIds) {
+     const connection = connections[roomId];
+   }
+   ```
+
+Option 1 gives you an array of values, where the element order is guaranteed to match the `keys` order of the current render.
+Option 2 gives you a map from key to value, but the iteration order of the map may get out of sync with the `keys` iteration order over time.
+Which option is better depends on your use case.
 
 ## Corner cases
 
-- The `useForEach` hook does not catch errors.
-  When `callback` throws an error, it will bubble up and terminate the current render.
-  This follows the example established by the `useMemo` callback and `useState` initializer callback.
+### Exception handling
 
-- Passing duplicate values inside the `keys` array triggers a [duplicate keys](https://github.com/facebook/react/blob/a4964987dc140526702e996223fe7ee293def8ac/packages/react-reconciler/src/ReactChildFiber.js#L1070-L1077) error.
-  There are two possibilities how this error could be reported:
+The `useForEach` hook does not catch errors.
+When `callback` throws an error, it will bubble up and terminate the current render.
+This follows the example established by the `useMemo` callback and `useState` initializer callback.
 
-  1. The error is logged to `console.error` in development, and silently discarded in production.
-     React tries to match loop iterations to hook state via the array index.
-     If the `keys` array changes in a subsequent render and an array element cannot be matched to its previous, the loop "instances" of the duplicate keys can become "orphaned".
-     This follows the example established by JSX keys.
-     Appendix "React handling of duplicate keys in JSX" demonstrates this behaviour for JSX elements.
-  2. The error is thrown, terminating the current render.
-     There is no precedence in React for throwing an error on duplicate keys.
+### Duplicate keys
 
-  While it is generally
+Passing a `keys` iterable that contains duplicate values triggers a [duplicate keys](https://github.com/facebook/react/blob/a4964987dc140526702e996223fe7ee293def8ac/packages/react-reconciler/src/ReactChildFiber.js#L1070-L1077) error.
+The error is logged to `console.error` in development, and silently discarded in production.
 
-- To determine key equality, the `useForEach` hook internally converts all elements in the `keys` array to strings.
-  All of the following arrays will trigger a duplicate keys error:
-  `["1", 1]`, `[{}, {}]`, `["null", null]`
-  This follows the example established by JSX keys.
+For duplicate keys, React tries to match loop `callback` calls to hook state via the iteration index.
+If matching based on the index fails, the loop "instances" of the duplicate keys and the associated Hooks become "orphaned".
+Orphaned state hooks can be garbage collected because they can never be read again, and orphaned effect hooks will never execute their cleanup function.
+See [Appendix A: React handling of duplicate keys in JSX](#appendix-a-react-handling-of-duplicate-keys-in-jsx) for a demonstration of this behaviour for JSX elements.
 
-This is the bulk of the RFC. Explain the design in enough detail for somebody
-familiar with React to understand, and for somebody familiar with the
-implementation to implement. This should get into specifics and corner-cases,
-and include examples of how the feature is used. Any new terminology should be
-defined here.
+This follows the example established by JSX keys.
+
+### Key type coercion
+
+To determine key equality, the `useForEach` hook internally converts all elements in the `keys` array to strings.
+All of the following arrays will trigger a duplicate keys error:
+`["1", 1]`, `[{}, {}]`, `["null", null]`
+This follows the example established by JSX keys.
 
 ## Sharing state between iterations
 
@@ -233,6 +346,15 @@ function useMultipleConnections(roomIds) {
 ```
 
 # Drawbacks
+
+Foot gun - this hook is powerful, and as such requires a certain level of care and understanding to use properly.
+Improper use can cause problems like:
+
+- performance issues due to excessive hook calls
+- memory leaks
+
+The issue is even greater here than with JSX arrays because this hook will probably be used almost exclusively for effects.
+Maybe this complexity should not be made more accessible, and should be left to experienced engineers who build solutions outside of React.
 
 Why should we _not_ do this? Please consider:
 
@@ -276,25 +398,29 @@ How should this feature be taught to existing React developers?
 
 # Unresolved questions
 
-Optional, but suggested for first drafts. What parts of the design are still
-TBD?
-
-Alternative names:
-
-- `useLoop()`, `useRepeat()`
-- `useMap()`
-- `useNestedHooks()`
+- Implementation cost, both in term of code size and complexity.
+- Is this hook compatible/composable with all other hooks?
+  I have never used `useActionState`, `useDeferredValue`, `useOptimistic`, and `useTransition`.
+- What is a good name for this hook?
+  List of ideas:
+  - `useForEach` (from [`Array.forEach`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/forEach))
+  - `useMap` (from [`Array.map`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/map))
+  - `useLoop`, `useRepeat`
+  - `useNestedHooks`
 
 # Appendices
 
 All code listings were tested with React v19.0 in production mode, inside `<StrictMode>`.
+You can run the code locally, [here](https://github.com/pschiffmann/use-for-each-playground) is the repository.
 
 ## Appendix A: React handling of duplicate keys in JSX
 
 This appendix demonstrates how React handles duplicate keys in JSX arrays.
-Before we look at the duplicate keys case, let's first examine a well-behaving program.
+Before we look at the duplicate keys case, we first examine a well-behaving program.
 
 https://github.com/user-attachments/assets/eef30d1f-f54b-4eee-96c1-c239f258aaea
+
+[live demo](https://pschiffmann.github.io/use-for-each-playground/appendix-a-unique-keys.html)
 
 <details>
 <summary>Listing 10-1: A well-behaving React app with unique keys.</summary>
@@ -363,8 +489,10 @@ To observe how React handles duplicate keys, we give the children `A`, `B` and `
 
 https://github.com/user-attachments/assets/7636308c-ae68-4d87-b16f-326904b79a65
 
+[live demo](https://pschiffmann.github.io/use-for-each-playground/appendix-a-duplicate-keys.html)
+
 <details>
-<summary>Listing 10-2: A React app with glitches due to duplicate keys.</summary>
+<summary>Listing 10-2: A React app with glitches caused by duplicate keys.</summary>
 
 ```tsx
 import { useEffect, useState } from "react";
@@ -409,4 +537,8 @@ function Child({ value }) {
 </details>
 
 We can see that React doesn't properly unmount all elements, and also doesn't run all effect cleanup callbacks.
-In a real application, this can lead to a UI glitches with duplicated UI elements, and possibly memory leaks due to external resources that are allocated but never cleaned up.
+In a real application, this can lead to UI glitches with duplicated UI elements, and possibly memory leaks due to external resources that are allocated but never cleaned up.
+
+## Appendix B: Managing an array of external resources with `useEffect`
+
+## Appendix C: `useSyncExternalStore` to access an array of external states
