@@ -14,46 +14,61 @@ The `callback` function is allowed to call hooks, as if it was at the top level 
 ```ts
 import { useEffect, useForEach, useMemo, useState } from "react";
 
-const results = useForEach(keys, (key) => {
-  const [state, setState] = useState(/* ... */);
-  useEffect(/* ... */);
-  return useMemo(/* ... */);
-});
+function MyComponent() {
+  const results = useForEach(keys, (key) => {
+    const [state, setState] = useState(/* ... */);
+    useEffect(/* ... */);
+    return useMemo(/* ... */);
+  });
+  // ...
+}
 ```
 
 # Motivation
 
-Once you have learned to think in React, synchronizing a single external system with React is simple, sane and straight-forward.
-The `useSyncExternalStore` and `useEffect` hooks let you subscribe to a single external state, or allocate and clean-up a single resource, respectively.
-The hooks have clear semantics and a predictable lifecycle
-predictable, easy to reason about, colocating allocation and cleanup,
+Once you have learned to think in React, synchronizing a _single_ external system with React is straight-forward, sane, and predictable:
+Connect to the system inside an effect, disconnect from the system inside the cleanup of that same effect.
+React guarantees that effects and cleanups are executed in a well-defined, predictable order, which makes it relatively easy to reason about race conditions and memory leaks.
 
-`useEffect` is an excellent/genius API because predictable, colocating. We want these attributes also for managing array of external resources, but the hook doesn't work that way
+Unfortunately, this mental model cannot be applied today if we need to synchronize _a dynamic number_ of external systems.
+The natural way to process multiple values is to iterate over them, but loops and Hooks don't compose:
 
-React provides several hooks that deal with a single piece of data.
+1. Placing the `useEffect` call inside a `for ... of` loop is forbidden by the [Rules of Hooks](https://react.dev/reference/rules/rules-of-hooks).
+2. Placing the `for ... of` loop inside the `useEffect` call will execute the cleanup function for _all_ elements whenever _any_ element changes.
 
-- `useEffect` synchronizes a single external resource with React.
-- `useMemo` and `useCallback` memoize a single value.
-- `useId` allocates a single document-wide unique id.
-
-But when an applications has to deal with an array of such data, React doesn't offer a canonical solution.
-
----
-
-Two ubiquitous refactoring tasks we encounter in almost every React application are: [lifting state up](https://react.dev/learn/sharing-state-between-components), and [synchronizing with effects](https://react.dev/learn/synchronizing-with-effects).
-But applying both refactorings _at the same time_ (i.e. lifting effects up) can be surprisingly difficult.
+Today, applications that need to connect to a dynamic number of external systems have no other choice than to use non-idiomatic workarounds.
+This increases the risk of race conditions and memory leaks, makes the code harder to read, and causes code duplication if both single-connection and multi-connection hooks are needed for the same external system.
 
 ## ChatRooms example
 
-We can observe these problems when trying to build a
+To give a specific example, we will look at a simple chat app.
+The app allows users to connect to multiple chat rooms at the same time.
+The UI renders one chat room at a time, and users can switch between all connected chat rooms via a [tabs](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/) component.
+A badge over each tab tells the user if that chat room has unread messages.
 
-<img width="600" alt="image" src="https://github.com/user-attachments/assets/51aa4c0d-7cb5-442d-a4d4-2eafe7ce0f60" />
+<img width="600" alt="image" src="https://github.com/user-attachments/assets/2ab0f007-9b1c-4ae6-952f-ae30882068a9" />
 
-Integrating a single chat room connection with a React application is pretty straight-forward, and is covered in great detail in the [Lifecycle of React Effects](https://react.dev/learn/lifecycle-of-reactive-effects) chapter.
+[live demo](https://pschiffmann.github.io/use-for-each-playground/chat-app-non-idiomatic.html) | [source code](https://github.com/pschiffmann/use-for-each-playground/blob/main/src/chat-app/main-non-idiomatic.tsx)
 
-This code snippet is taken from the [Lifecycle of React Effects](https://react.dev/learn/lifecycle-of-reactive-effects) chapter, slightly altered with a `useState()` hook to give the component access to the connection object.
+Connecting to a single chat room is pretty straight-forward, and is covered in great detail in the [Lifecycle of React Effects](https://react.dev/learn/lifecycle-of-reactive-effects) docs.
+We can use the `ChatRoom` component from the docs as a starting point, and render one `ChatRoom` per tab.
 
 ```tsx
+function ChatApp() {
+  const [roomIds, setRoomIds] = useState(/* ... */);
+
+  return (
+    <Tabs
+      tabs={roomIds.map((roomId) => ({
+        key: roomId,
+        label: roomId,
+        badge: 0, // ???
+        content: <ChatRoom roomId={roomId} />,
+      }))}
+    />
+  );
+}
+
 function ChatRoom({ roomId }) {
   const connection = useSingleConnection(roomId);
   // ...
@@ -62,7 +77,7 @@ function ChatRoom({ roomId }) {
 function useSingleConnection(roomId) {
   const [conn, setConn] = useState(null);
   useEffect(() => {
-    const connection = createConnection(roomId);
+    const connection = new ChatRoomConnection(roomId);
     setConn(connection);
     return () => {
       connection.disconnect();
@@ -73,78 +88,132 @@ function useSingleConnection(roomId) {
 }
 ```
 
-Now, imagine we want to extend our chat app, and support connecting to multiple chat rooms at the same time.
-We want to render a [tabs](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/) component where each chat room is displayed with a tab.
+While this implementation is a decent start, it has two limitations.
+First, connections are closed and re-opened whenever we switch tabs (because the `Tabs` component unmounts hidden tabs).
+Second, we can't render the "unread messages" badge count because the `ChatApp` component doesn't have access to the connection objects.
+
+To address both issues, we need to lift the connection state up into `ChatApp`.
+Ideally, we could reuse the `useSingleConnection` Hook.
 
 ```tsx
-function ChatApp({ rooms }) {
-  const [activeTab, setActiveTab] = useState(0);
+function ChatApp() {
+  const [roomIds, setRoomIds] = useState(/* ... */);
+  const connections = useMultipleConnections(roomIds);
+  const unreadCounts = useUnreadCounts(connections);
+
   return (
     <Tabs
-      labels={rooms.map((room) => room.name)}
-      activeTab={activeTab}
-      onTabChange={(i) => setActiveTab(i)}
-    >
-      <ChatRoom roomId={rooms[activeTab].id} />
-    </Tabs>
+      tabs={roomIds.map((roomId, i) => ({
+        key: roomId,
+        label: roomId,
+        badge: unreadCounts[i],
+        content: <ChatRoom connection={connections[i]} />,
+      }))}
+    />
   );
 }
-```
 
-Finally, if there are unread messages in a chatroom, we want to show a badge on that tab.
-Assuming we can read this information from the connection object, then we need to lift the state up – the connections must be moved from the `ChatRoom` to the `ChatApp`.
-
-Ideally, we could just use a loop in `ChatApp` to iterate over `rooms`, like this:
-
-```tsx
-function ChatApp({ rooms }) {
-  const connections = rooms.map((room) => useSingleConnection(room.id));
-  // ...
+function useMultipleConnections(roomIds) {
+  return roomIds.map((roomId) => useSingleConnection(roomId));
 }
 ```
 
-However, this is forbidden by the [Rules of Hooks](https://react.dev/reference/rules/rules-of-hooks).
-Instead, we have to move the loop inside the effect.
+Alas, we can't.
+When we connect to another chat room by adding an element to `roomIds`, React throws this error:
+
+> React has detected a change in the order of Hooks called by ChatApp.
+> This will lead to bugs and errors if not fixed.
+> For more information, read the Rules of Hooks: https://react.dev/link/rules-of-hooks
+
+Instead, we have to move the `roomIds.map()` call inside the `useEffect`.
 
 ```tsx
 function useMultipleConnections(roomIds) {
-  const [conns, setConns] = useState([]);
+  const [connections, setConnections] = useState(() => []);
   useEffect(() => {
-    const connections = roomIds.map((roomId) => createConnection(roomId));
-    setConns(connections);
+    const connections = roomIds.map((roomId) => new ChatRoomConnection(roomId));
+    setConnections(connections);
     return () => {
-      connections.forEach((connection) => connection.disconnect());
-      setConns([]);
+      connections.forEach((connection) => connection.close());
     };
   }, [roomIds]);
-  return conns;
+  return connections;
 }
 ```
 
-But this is still not perfect.
-Whenever the user connects to a new chatroom, or even just reorders their rooms list, this code closes and re-opens all connections.
-This can cause flashing UI elements, and child components possibly losing state or re-triggering their own effects.
+With the new hook implementation, we can make changes to the `roomIds` array without crashing the app.
+But with every change to the array, we now close and re-open _all_ connections.
+This results in flickering badges and chat content whenever the user connects to a new room, disconnects from a room, or merely moves tabs around.
 
-To work around this issue, we either need to use some non-idiomatic React Ref trickery; or move the connection management out of React and into our own state management solution.
-In any case, we lose the clean React semantics and lifecycle guarantees that `useEffect` provides.
+https://github.com/user-attachments/assets/556a9036-6dcf-4424-883f-04b053ab6f82
 
-## With `useForEach()`
+[live demo](https://pschiffmann.github.io/use-for-each-playground/chat-app-naive.html) | [source code](https://github.com/pschiffmann/use-for-each-playground/blob/main/src/chat-app/main-naive.tsx)
+
+To avoid closing all connections whenever `roomIds` changes, we need to put the "connect" and "disconnect" code into different effects, with different dependencies.
+We also need to use a ref object to share the connections with the "disconnect" effect.
+
+```tsx
+function useMultipleConnectionsNonIdiomatic(roomIds) {
+  const connectionsRef = useRef(new Map());
+  const [connections, setConnections] = useState(() => new Map());
+
+  useEffect(() => {
+    let hasChanges = false;
+
+    const connections = connectionsRef.current;
+    // Open new connections.
+    for (const roomId of roomIds) {
+      if (connections.has(roomId)) continue;
+      hasChanges = true;
+      connections.set(roomId, new ChatRoomConnection(roomId));
+    }
+
+    // Close no longer used connections on updates.
+    for (const [roomId, connection] of connections) {
+      if (roomIds.includes(roomId)) continue;
+      hasChanges = true;
+      connections.delete(roomId);
+      connection.close();
+    }
+
+    if (hasChanges) setConnections(new Map(connections));
+  }, [roomIds]);
+
+  // Close all connections on unmount with a effect cleanup.
+  useEffect(
+    () => () => {
+      connectionsRef.current.forEach((connection) => connection.close());
+      connectionsRef.current.clear();
+    },
+    []
+  );
+
+  return roomIds.map((roomId) => connections.get(roomId) ?? null);
+}
+```
+
+https://github.com/user-attachments/assets/a472bc84-233c-4832-9706-b980056c552c
+
+[live demo](https://pschiffmann.github.io/use-for-each-playground/chat-app-non-idiomatic.html) | [source code](https://github.com/pschiffmann/use-for-each-playground/blob/main/src/chat-app/main-non-idiomatic.tsx)
+
+This works, but it's messy.
+And it only gets worse as the effect depends on more dependencies.
+
+### With `useForEach()`
 
 Idiomatic React is all about _composition_.
 Ideally, we want to compose the `useMultipleConnections()` hook from the existing `useSingleConnection()` hook.
-The `useForEach()` hook is one possible API design to achieve this goal.
+The `useForEach()` hook lets us do just that.
 
 ```tsx
-function ChatApp({ rooms }) {
-  const roomIds = rooms.map((room) => room.id);
-  const connections = useForEach(roomIds, (roomId) =>
-    useSingleConnection(room.id)
-  );
-  // ...
+function useMultipleConnections(roomIds) {
+  return useForEach(roomIds, (roomId) => {
+    return useSingleConnection(roomId);
+  });
 }
 ```
 
-The hook can effectively be used to convert any hook that manages a single state, effect or resource, into a hook that manages an array of said state, effects or resources.
+The hook can effectively be used to convert any hook (native or userland) that manages a single state, effect or resource, into a hook that manages an array of said state, effects or resources.
 
 # Detailed design
 
