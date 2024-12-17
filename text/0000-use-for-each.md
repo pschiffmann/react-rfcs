@@ -46,7 +46,7 @@ The app allows users to connect to multiple chat rooms at the same time.
 The UI renders one chat room at a time, and users can switch between all connected chat rooms via a [tabs](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/) component.
 A badge over each tab tells the user if that chat room has unread messages.
 
-<img width="600" alt="image" src="https://github.com/user-attachments/assets/2ab0f007-9b1c-4ae6-952f-ae30882068a9" />
+<img width="600" alt="Screenshot of a chat app with 3 connected chat rooms, organized in tabs" src="https://github.com/user-attachments/assets/2ab0f007-9b1c-4ae6-952f-ae30882068a9" />
 
 [live demo](https://pschiffmann.github.io/use-for-each-playground/chat-app-non-idiomatic.html) | [source code](https://github.com/pschiffmann/use-for-each-playground/blob/main/src/chat-app/main-non-idiomatic.tsx)
 
@@ -88,8 +88,8 @@ function useSingleConnection(roomId) {
 }
 ```
 
-While this implementation is a decent start, it has two limitations.
-First, connections are closed and re-opened whenever we switch tabs (because the `Tabs` component unmounts hidden tabs).
+While this implementation is a decent start, we need to fix two issues.
+First, connections are closed and re-opened whenever we switch tabs (because the `Tabs` component mounts only the active tab).
 Second, we can't render the "unread messages" badge count because the `ChatApp` component doesn't have access to the connection objects.
 
 To address both issues, we need to lift the connection state up into `ChatApp`.
@@ -119,7 +119,7 @@ function useMultipleConnections(roomIds) {
 ```
 
 Alas, we can't.
-When we connect to another chat room by adding an element to `roomIds`, React throws this error:
+When we connect to another chat room by adding an element to the `roomIds` array, React throws this error:
 
 > React has detected a change in the order of Hooks called by ChatApp.
 > This will lead to bugs and errors if not fixed.
@@ -197,9 +197,9 @@ https://github.com/user-attachments/assets/a472bc84-233c-4832-9706-b980056c552c
 [live demo](https://pschiffmann.github.io/use-for-each-playground/chat-app-non-idiomatic.html) | [source code](https://github.com/pschiffmann/use-for-each-playground/blob/main/src/chat-app/main-non-idiomatic.tsx)
 
 This works, but it's messy.
-And it only gets worse as the effect depends on more dependencies.
+And it only gets worse if the effect grows and depends on more dependencies.
 
-### With `useForEach()`
+### `useEffect` with `useForEach()`
 
 Idiomatic React is all about _composition_.
 Ideally, we want to compose the `useMultipleConnections()` Hook from the existing `useSingleConnection()` Hook.
@@ -214,6 +214,49 @@ function useMultipleConnections(roomIds) {
 ```
 
 The Hook can effectively be used to convert any Hook (native or userland) that manages a single state, effect or resource, into a Hook that manages an array of said state, effects or resources.
+
+### `useId` with `useForEach`
+
+Our chat app renders a dynamic number of tabs.
+[WAI-ARIA](https://w3c.github.io/aria/#tabpanel) requires that both tabs and tab panels have an HTML `id` attribute.
+
+> Authors SHOULD associate a tabpanel element with its tab, by using the aria-controls attribute on the tab to reference the tab panel, and/or by using the aria-labelledby attribute on the tab panel to reference the tab.
+
+Therefore, we need 2×`roomIds.length` unique HTML ids.
+Today, we can generate a single id prefix with `useId`, use the room ids as suffixes, and hope that a simple string concatenation results in a valid HTML id.
+
+With `useForEach`, we could instead generate an arbitrary number of ids that are guaranteed to be valid.
+
+```tsx
+const ids = useForEach(roomIds, () => useId());
+```
+
+### `useSyncExternalStore` with `useForEach`
+
+One implementation detail of `ChatApp` that I skipped over earlier is `useUnreadCounts(connections)`.
+The code listing above uses this hook to read the `ChatRoomConnection#unreadCount` properties from all open connections.
+Without the `useForEach` hook, this userland hook is surprisingly difficult to implement – at least, if we want to keep the results array stable until one of its elements changes.
+
+The `useForEach` would make this easy to implement.
+
+```tsx
+function useUnreadCounts(connections) {
+  return useForEach(connections, (connection) => {
+    const subscribe = useCallback(
+      (onStoreChange) => {
+        const unsubscribe = connection?.subscribe("unreadCount", onStoreChange);
+        return () => unsubscribe?.();
+      },
+      [connection]
+    );
+    const getSnapshot = useCallback(
+      () => connection?.readyState ?? 0,
+      [connection]
+    );
+    return useSyncExternalStore(subscribe, getSnapshot);
+  });
+}
+```
 
 # Detailed design
 
@@ -258,7 +301,7 @@ A frozen array containing the results from calling `callback` with all `keys`.
 The order of values inside the results array matches the order of `keys`.
 For example, if `keys` is `[1, 2, 3]` during one render and `[2, 1, 3]` during the next, then the first results array will be `[callback(1), callback(2), callback(3)]`, and the second will be `[callback(2), callback(1), callback(3)]`.
 
-React will return the same array during consecutive renders, if the number of keys hasn't changed, each index in the results array contains the same value as during the previous render (as determined by `Object.is`).
+React will return the same array during consecutive renders if the number of keys hasn't changed, and each index in the results array contains the same value as during the previous render (as determined by `Object.is`).
 To prevent inadvertent mutations that would leak into consecutive renders, the results array is [frozen](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/freeze).
 
 ## Usage
