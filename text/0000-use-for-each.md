@@ -26,7 +26,7 @@ function MyComponent({ keys }) {
 
 # Motivation
 
-Once you have learned to think in React, synchronizing a _single_ external system with React is straight-forward:
+Synchronizing a _single_ external system with React is straight-forward:
 Connect to the system inside an effect, disconnect from the system inside the cleanup of that same effect.
 React guarantees that effects and cleanups are executed in a well-defined, predictable order, which makes it relatively easy to reason about race conditions and memory leaks.
 
@@ -88,8 +88,10 @@ function useSingleConnection(roomId) {
 }
 ```
 
+_Listing 3-1: ChatApp initial version._
+
 While this implementation is a decent start, we need to fix two issues.
-First, connections are closed and re-opened whenever we switch tabs (because the `Tabs` component mounts only the active tab).
+First, connections are closed and re-opened whenever we switch tabs (because our `Tabs` component mounts only the active tab).
 Second, we can't render the "unread messages" badge count because the `ChatApp` component doesn't have access to the connection objects.
 
 To address both issues, we need to lift the connection state up into `ChatApp`.
@@ -118,6 +120,8 @@ function useMultipleConnections(roomIds) {
 }
 ```
 
+_Listing 3-2: ChatApp after lifting connection state to parent. The "useMultipleConnections" hook is erroneous._
+
 Alas, we can't.
 When we connect to another chat room by adding an element to the `roomIds` array, React throws this error:
 
@@ -141,6 +145,8 @@ function useMultipleConnections(roomIds) {
 }
 ```
 
+_Listing 3-3: "useMultipleConnections" hook naive implementation that closes all connections on changes._
+
 With the new Hook implementation, we can make changes to the `roomIds` array without crashing the app.
 But with every change to the array, we now close and re-open _all_ connections.
 This results in flickering badges and chat content whenever the user connects to a new room, disconnects from a room, or merely moves tabs around.
@@ -153,7 +159,7 @@ To avoid closing all connections whenever `roomIds` changes, we need to put the 
 We also need to use a ref object to share the connections with the "disconnect" effect.
 
 ```tsx
-function useMultipleConnectionsNonIdiomatic(roomIds) {
+function useMultipleConnections(roomIds) {
   const connectionsRef = useRef(new Map());
   const [connections, setConnections] = useState(() => new Map());
 
@@ -192,6 +198,8 @@ function useMultipleConnectionsNonIdiomatic(roomIds) {
 }
 ```
 
+_Listing 3-4: "useMultipleConnections hook implementation that doesn't close unrelated connections on change, but violates "useEffect" usage guidelines._
+
 https://github.com/user-attachments/assets/a472bc84-233c-4832-9706-b980056c552c
 
 [live demo](https://pschiffmann.github.io/use-for-each-playground/chat-app-non-idiomatic.html) | [source code](https://github.com/pschiffmann/use-for-each-playground/blob/main/src/chat-app/main-non-idiomatic.tsx)
@@ -213,6 +221,8 @@ function useMultipleConnections(roomIds) {
 }
 ```
 
+_Listing 3-5: "useMultipleConnections" implementation based on "useForEach" hook._
+
 The Hook can effectively be used to convert any Hook (native or userland) that manages a single state, effect or resource, into a Hook that manages an array of said state, effects or resources.
 
 ### `useId` with `useForEach`
@@ -230,6 +240,8 @@ With `useForEach`, we could instead generate an arbitrary number of ids that are
 ```tsx
 const ids = useForEach(roomIds, () => useId());
 ```
+
+_Listing 3-6: Generating a dynamic number of unique HTML ids._
 
 ### `useSyncExternalStore` with `useForEach`
 
@@ -257,6 +269,8 @@ function useUnreadCounts(connections) {
   });
 }
 ```
+
+_Listing 3-7: "useMultipleConnections" implementation based on "useForEach" hook._
 
 # Detailed design
 
@@ -323,6 +337,8 @@ function ChatApp({ roomIds }) {
 }
 ```
 
+_Listing 4-1: Execute an array of effects with "useForEach"._
+
 You can think of this code as being equivalent to this:
 
 ```tsx
@@ -338,8 +354,10 @@ function ChatApp({ roomIds }) {
 }
 ```
 
-The second code listing (with the `for ... of` loop) is not valid React code, because it violates the [Rules of Hooks](https://react.dev/reference/rules/rules-of-hooks).
-The first code listing (with the `useForEach` Hook) is valid React code, follows the Rules of Hooks, and achieves the same goal.
+_Listing 4-2: Explaining useForEach in terms of a simple "for ... of" loop._
+
+Code listing 4-2 is not valid React code, because it violates the [Rules of Hooks](https://react.dev/reference/rules/rules-of-hooks).
+Code listing 4-1 is valid React code, follows the Rules of Hooks, and results in the same runtime behaviour.
 
 ### Associating state with keys
 
@@ -350,8 +368,8 @@ If you need to store some state for each of your keys, you have two options.
    ```tsx
    function ChatApp({ roomIds }) {
      const connections = useForEach(roomIds, (roomId) => {
-       const connections = useEffect(() => {
-         const [conn, setConn] = useState(null); // <- State variable that stores a single connection object.
+       const [conn, setConn] = useState(null); // <- State variable that stores a single connection object.
+       useEffect(() => {
          const connection = createConnection(roomId);
          setConn(connection); // <- Write to the local state variable.
          return () => {
@@ -359,10 +377,12 @@ If you need to store some state for each of your keys, you have two options.
            setConn(null);
          };
        }, [roomId]);
-       return conn; // <- Pass the local variable to the parent scope.
+       return conn; // <- Pass the local variable to the component scope.
      });
    }
    ```
+
+   _Listing 4-3: Creating local state inside the "useForEach" callback._
 
    Call `useState` inside the `useForEach` callback to create a local state variable.
    Write to that state within the effect, and return the state from the callback function.
@@ -377,13 +397,15 @@ If you need to store some state for each of your keys, you have two options.
    }
    ```
 
+   _Listing 4-4: Mapping "useForEach" results to keys by index._
+
 2. Alternatively, you can store all values in a single state variable, inside a [Map](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map) or object.
 
    ```tsx
    function ChatApp({ roomIds }) {
      const [connections, setConnections] = useState({}); // <- State variable that stores all connections.
      useForEach(roomIds, (roomId) => {
-       const connections = useEffect(() => {
+       useEffect(() => {
          const connection = createConnection(roomId);
          setConnections((prev) => ({ ...prev, [roomId]: connection })); // <- Write to the component-level state.
          return () => {
@@ -396,6 +418,8 @@ If you need to store some state for each of your keys, you have two options.
    }
    ```
 
+   _Listing 4-5: Accessing component state from within the "useForEach" callback._
+
    To find the connection corresponding to a specific key, index the map by that key:
 
    ```tsx
@@ -403,6 +427,8 @@ If you need to store some state for each of your keys, you have two options.
      const connection = connections[roomId];
    }
    ```
+
+   _Listing 4-6: Mapping keys to state created by an effect inside "useForEach" callback._
 
 Option 1 gives you an array of values, where the element order is guaranteed to match the `keys` order of the current render.
 Option 2 gives you a map from key to value, but the iteration order of the map may get out of sync with the `keys` iteration order over time.
@@ -435,84 +461,44 @@ All of the following arrays will trigger a duplicate keys error:
 `["1", 1]`, `[{}, {}]`, `["null", null]`
 This follows the example established by JSX keys.
 
-## Sharing state between iterations
-
-```tsx
-function useMultipleConnections(roomIds) {
-  const [connections, setConnections] = useState({});
-  useForEach(roomIds, (roomId) => {
-    useEffect(() => {
-      const connection = createConnection(roomId);
-      setConnections((prev) => ({ ...prev, [roomId]: connection }));
-      return () => {
-        connection.disconnect();
-        setConn((prev) => {
-          const { [roomId]: _, ...rest } = { ...prev };
-          return rest;
-        });
-      };
-    }, [roomId]);
-  });
-  return connections;
-}
-```
-
 # Drawbacks
 
-Foot gun - this Hook is powerful, and as such requires a certain level of care and understanding to use properly.
-Improper use can cause problems like:
-
-- performance issues due to excessive Hook calls
-- memory leaks
-
-The issue is even greater here than with JSX arrays because this Hook will probably be used almost exclusively for effects.
-Maybe this complexity should not be made more accessible, and should be left to experienced engineers who build solutions outside of React.
-
-Why should we _not_ do this? Please consider:
-
-- implementation cost, both in term of code size and complexity
-- whether the proposed feature can be implemented in user space
-- the impact on teaching people React
-- integration of this feature with other existing and planned features
-- cost of migrating existing React applications (is it a breaking change?)
-
-There are tradeoffs to choosing any path. Attempt to identify them here.
+- The duplicate key behaviour is a footgun.
+- Identifying when to use this Hook over other solutions might be difficult for React beginners.
+  Similar to how beginners often use `useState` + `useEffect` instead of `useMemo`, this Hook could open the door to a new wave of Hook misuse.
 
 # Alternatives
 
-Handle collections of state and/or effects outside of React, then synchronize them with React via `useEffect` or `useSyncExternalStore`.
-
-What other designs have been considered? What is the impact of not doing this?
+- Alternatives for Hook composition with loops in userland: none
+- Alternative for managing an array of external resources:
+  Two separate `useEffect` hooks for allocation and cleanup, plus a `useRef` hook; see listing 3-4.
+  This code is non-idiomatic an error-prone.
+- Alternative for allocating and closing resources:
+  Writing your own resource manager.
+  This resource manager must still be synchronized with React.
 
 # Adoption strategy
 
-If we implement this proposal, how will existing React developers adopt it? Is
-this a breaking change? Can we write a codemod? Should we coordinate with
-other projects or libraries?
-
-The `uesForEach()` Hook allows to
+Not a breaking change.
+This can be shipped in a minor release.
 
 # How we teach this
 
 The `useForEach()` Hook is a continuation of two established concepts in React: keys and Hook composition.
 
-It is an advanced concept, and fits well as its own sub-page in the [Escape Hatches](https://react.dev/learn/escape-hatches) chapter.
-, lifting state up, and synchronizing with effects.
-
-What names and terminology work best for these concepts and why? How is this
-idea best presented? As a continuation of existing React patterns?
-
-Would the acceptance of this proposal mean the React documentation must be
-re-organized or altered? Does it change how React is taught to new developers
-at any level?
-
-How should this feature be taught to existing React developers?
+On the React learning path, it places somewhere between `useEffect` and `useSyncExternalStore`:
+It is useful for advanced use cases, but not necessary knowledge to be productive with React.
+There is no need to cover this Hook in the React tutorial or other beginner documentation.
+It probably fits well as its own sub-page in the [Escape Hatches](https://react.dev/learn/escape-hatches) chapter.
 
 # Unresolved questions
 
 - Implementation cost, both in term of code size and complexity.
+- Will this Hook cause any conflicts with background rendering, triggered by `useTransition`?
 - Is this Hook compatible/composable with all other Hooks?
   I have never used `useActionState`, `useDeferredValue`, `useOptimistic`, and `useTransition`.
+- How does this Hook interact with RSCs?
+  I have never worked with RSCs, I only built React SPAs.
 - What is a good name for this Hook?
   List of ideas:
   - `useForEach` (from [`Array.forEach`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/forEach))
@@ -533,9 +519,6 @@ Before we look at the duplicate keys case, we first examine a well-behaving prog
 https://github.com/user-attachments/assets/eef30d1f-f54b-4eee-96c1-c239f258aaea
 
 [live demo](https://pschiffmann.github.io/use-for-each-playground/appendix-a-unique-keys.html)
-
-<details>
-<summary>Listing 10-1: A well-behaving React app with unique keys.</summary>
 
 ```tsx
 import { useEffect, useState } from "react";
@@ -577,7 +560,7 @@ function Child({ value }) {
 }
 ```
 
-</details>
+_Listing 10-1: A well-behaving React app with unique keys._
 
 The "show/hide" button mounts/unmounts a list of four children `A`, `B`, `C`, `Z`.
 The "Z >> 1" button moves the `Z` child to the next position in the list, wrapping around after the last position.
@@ -602,9 +585,6 @@ To observe how React handles duplicate keys, we give the children `A`, `B` and `
 https://github.com/user-attachments/assets/7636308c-ae68-4d87-b16f-326904b79a65
 
 [live demo](https://pschiffmann.github.io/use-for-each-playground/appendix-a-duplicate-keys.html)
-
-<details>
-<summary>Listing 10-2: A React app with glitches caused by duplicate keys.</summary>
 
 ```tsx
 import { useEffect, useState } from "react";
@@ -646,11 +626,7 @@ function Child({ value }) {
 }
 ```
 
-</details>
+_Listing 10-2: A React app with glitches caused by duplicate keys._
 
 We can see that React doesn't properly unmount all elements, and also doesn't run all effect cleanup callbacks.
 In a real application, this can lead to UI glitches with duplicated UI elements, and possibly memory leaks due to external resources that are allocated but never cleaned up.
-
-## Appendix B: Managing an array of external resources with `useEffect`
-
-## Appendix C: `useSyncExternalStore` to access an array of external states
