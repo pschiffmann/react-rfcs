@@ -26,31 +26,31 @@ function MyComponent({ keys }) {
 
 # Motivation
 
-Synchronizing a _single_ external system with React is straight-forward:
+[Synchronizing a _single_ external system](https://react.dev/learn/synchronizing-with-effects) with React is straight-forward:
 Connect to the system inside an effect, disconnect from the system inside the cleanup of that same effect.
 React guarantees that effects and cleanups are executed in a well-defined, predictable order, which makes it relatively easy to reason about race conditions and memory leaks.
 
-Unfortunately, we can't carry over this mental model if we need to synchronize _a dynamic number_ of external systems.
+Unfortunately, we can't apply this mental model if we need to synchronize _a dynamic number_ of external systems.
 The natural way to process multiple values is to iterate over them, but loops and Hooks don't compose:
 
 1. Placing the `useEffect` call inside a `for ... of` loop is forbidden by the [Rules of Hooks](https://react.dev/reference/rules/rules-of-hooks).
-2. Placing the `for ... of` loop inside the `useEffect` call will execute the cleanup function for _all_ elements whenever _any_ element changes.
+2. Placing the `for ... of` loop inside the `useEffect` callback will execute the cleanup function for _all_ elements whenever _any_ element changes.
 
-Today, applications that need to connect to a dynamic number of external systems have no other choice than to use non-idiomatic workarounds.
+Today, applications that need to connect to a dynamic number of external systems must use non-idiomatic workarounds.
 This increases the risk of race conditions and memory leaks, makes the code harder to read, and causes code duplication if both single-connection and multi-connection Hooks are needed for the same external system.
 
 ## ChatRooms example
 
 To give a specific example, we will look at a simple chat app.
 The app allows users to connect to multiple chat rooms at the same time.
-The UI renders one chat room at a time, and users can switch between all connected chat rooms via a [tabs](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/) component.
+The UI renders one chat room at a time, and users can switch between all connected chat rooms via a tabs component.
 A badge over each tab tells the user if that chat room has unread messages.
 
 <img width="600" alt="Screenshot of a chat app with 3 connected chat rooms, organized in tabs" src="https://github.com/user-attachments/assets/2ab0f007-9b1c-4ae6-952f-ae30882068a9" />
 
 [live demo](https://pschiffmann.github.io/use-for-each-playground/chat-app-non-idiomatic.html) | [source code](https://github.com/pschiffmann/use-for-each-playground/blob/main/src/chat-app/main-non-idiomatic.tsx)
 
-Connecting to a single chat room is pretty straight-forward, and is covered in great detail in the [Lifecycle of React Effects](https://react.dev/learn/lifecycle-of-reactive-effects) docs.
+Connecting to a single chat room is done with a simple `useEffect`, and is covered in great detail in the [Lifecycle of React Effects](https://react.dev/learn/lifecycle-of-reactive-effects) docs.
 We can use the `ChatRoom` component from the docs as a starting point, and render one `ChatRoom` per tab.
 
 ```tsx
@@ -80,7 +80,7 @@ function useSingleConnection(roomId) {
     const connection = new ChatRoomConnection(roomId);
     setConn(connection);
     return () => {
-      connection.disconnect();
+      connection.close();
       setConn(null);
     };
   }, [roomId]);
@@ -91,7 +91,7 @@ function useSingleConnection(roomId) {
 _Listing 3-1: ChatApp initial version._
 
 While this implementation is a decent start, we need to fix two issues.
-First, connections are closed and re-opened whenever we switch tabs (because our `Tabs` component mounts only the active tab).
+First, connections are closed and re-opened whenever we switch tabs (because our `Tabs` component mounts only the visible tab, and unmounts all others).
 Second, we can't render the "unread messages" badge count because the `ChatApp` component doesn't have access to the connection objects.
 
 To address both issues, we need to lift the connection state up into `ChatApp`.
@@ -120,7 +120,7 @@ function useMultipleConnections(roomIds) {
 }
 ```
 
-_Listing 3-2: ChatApp after lifting connection state to parent. The "useMultipleConnections" hook is erroneous._
+_Listing 3-2: ChatApp after lifting connection state to parent. The "useMultipleConnections" Hook is erroneous._
 
 Alas, we can't.
 When we connect to another chat room by adding an element to the `roomIds` array, React throws this error:
@@ -145,7 +145,7 @@ function useMultipleConnections(roomIds) {
 }
 ```
 
-_Listing 3-3: "useMultipleConnections" hook naive implementation that closes all connections on changes._
+_Listing 3-3: "useMultipleConnections" Hook naive implementation that closes all connections on changes._
 
 With the new Hook implementation, we can make changes to the `roomIds` array without crashing the app.
 But with every change to the array, we now close and re-open _all_ connections.
@@ -198,20 +198,20 @@ function useMultipleConnections(roomIds) {
 }
 ```
 
-_Listing 3-4: "useMultipleConnections hook implementation that doesn't close unrelated connections on change, but violates "useEffect" usage guidelines._
+_Listing 3-4: "useMultipleConnections" Hook implementation that doesn't close unrelated connections on change, but violates "useEffect" usage guidelines._
 
 https://github.com/user-attachments/assets/a472bc84-233c-4832-9706-b980056c552c
 
 [live demo](https://pschiffmann.github.io/use-for-each-playground/chat-app-non-idiomatic.html) | [source code](https://github.com/pschiffmann/use-for-each-playground/blob/main/src/chat-app/main-non-idiomatic.tsx)
 
-This works, but it's messy.
-And it only gets worse if the effect grows and depends on more dependencies.
+This Hook works as expected, keeping connections open when the element order of the `roomIds` array changes, or a single connection is added or removed.
+But the implementation doesn't follow idiomatic React patterns and is significantly harder to reason about than the `useSingleConnection` Hook.
 
 ### `useEffect` with `useForEach()`
 
 Idiomatic React is all about _composition_.
-Ideally, we want to compose the `useMultipleConnections()` Hook from the existing `useSingleConnection()` Hook.
-The `useForEach()` Hook lets us do just that.
+Ideally, we want to compose the `useMultipleConnections()` Hook from the existing `useSingleConnection()` Hook, as seen in listing 3-2.
+The `useForEach()` Hook lets us do exactly that.
 
 ```tsx
 function useMultipleConnections(roomIds) {
@@ -221,7 +221,7 @@ function useMultipleConnections(roomIds) {
 }
 ```
 
-_Listing 3-5: "useMultipleConnections" implementation based on "useForEach" hook._
+_Listing 3-5: "useMultipleConnections" implementation based on "useForEach" Hook._
 
 The Hook can effectively be used to convert any Hook (native or userland) that manages a single state, effect or resource, into a Hook that manages an array of said state, effects or resources.
 
@@ -235,21 +235,24 @@ Our chat app renders a dynamic number of tabs.
 Therefore, we need 2×`roomIds.length` unique HTML ids.
 Today, we can generate a single id prefix with `useId`, use the room ids as suffixes, and hope that a simple string concatenation results in a valid HTML id.
 
-With `useForEach`, we could instead generate an arbitrary number of ids that are guaranteed to be valid.
+With `useForEach`, we can instead generate an arbitrary number of ids that are guaranteed to be valid.
 
 ```tsx
-const ids = useForEach(roomIds, () => useId());
+const ids = useForEach(roomIds, () => ({
+  tabId: useId(),
+  tabPanelId: useId(),
+}));
 ```
 
 _Listing 3-6: Generating a dynamic number of unique HTML ids._
 
 ### `useSyncExternalStore` with `useForEach`
 
-One implementation detail of `ChatApp` that I skipped over earlier is `useUnreadCounts(connections)`.
-The code listing above uses this hook to read the `ChatRoomConnection#unreadCount` properties from all open connections.
-Without the `useForEach` hook, this userland hook is surprisingly difficult to implement – at least, if we want to keep the results array stable until one of its elements changes.
+One implementation detail of `ChatApp` that we skipped over earlier is `useUnreadCounts(connections)`.
+Listing 3-2 uses this Hook to read the `connection.unreadCount` properties from all open connections.
+Without the `useForEach` Hook, this userland Hook is surprisingly difficult to implement – at least, if we want to keep the results array stable until one of its elements changes.
 
-The `useForEach` would make this easy to implement.
+The `useForEach` Hook makes this easy to implement.
 
 ```tsx
 function useUnreadCounts(connections) {
@@ -270,7 +273,7 @@ function useUnreadCounts(connections) {
 }
 ```
 
-_Listing 3-7: "useMultipleConnections" implementation based on "useForEach" hook._
+_Listing 3-7: "useUnreadCounts" implementation based on "useForEach" Hook._
 
 # Detailed design
 
@@ -297,11 +300,11 @@ declare function useForEach<K extends Key, T>(
   It should be pure, should take a single `key` argument, and may return a value of any type.
   It may call other React Hooks.
 
-  Hooks that are called inside `callback` use the passed-in `key` to track their state across multiple renders.
+  Hooks that are called inside `callback` use the `key` of the current iteration to track their internal state across multiple renders.
   For example, a `useState` Hook will always return the state for the same key, even if that key moves to different indexes in the `keys` iterable over multiple renders.
   Likewise, a `useEffect` Hook will compare the current dependencies with the previous dependencies of the same key to determine whether to execute again.
 
-  If `keys` contains a new key that wasn't present in the previous render, then the Hooks for that key will be newly initialized, like it normally happens during the first render of a component.
+  If `keys` contains a new key that wasn't present in the previous render, then the Hooks for that key will be newly initialized, in the same way as top level Hooks are initialized during the first component render.
   For example, `useMemo` will call its `calculateValue` callback, because there are no previous dependencies to compare yet.
 
   If `keys` doesn't contain a key that was present in the previous render, then the Hooks associated with that key are "unmounted".
@@ -357,7 +360,7 @@ function ChatApp({ roomIds }) {
 _Listing 4-2: Explaining useForEach in terms of a simple "for ... of" loop._
 
 Code listing 4-2 is not valid React code, because it violates the [Rules of Hooks](https://react.dev/reference/rules/rules-of-hooks).
-Code listing 4-1 is valid React code, follows the Rules of Hooks, and results in the same runtime behaviour.
+Code listing 4-1 is valid React code, follows the Rules of Hooks, but otherwise results in the same runtime behaviour.
 
 ### Associating state with keys
 
@@ -461,6 +464,12 @@ All of the following arrays will trigger a duplicate keys error:
 `["1", 1]`, `[{}, {}]`, `["null", null]`
 This follows the example established by JSX keys.
 
+### Nesting `useForEach` calls
+
+All native and userland Hooks may be called inside the `useForEach` callback, including other `useForEach` Hooks.
+This allows processing deeply nested data structures with Hooks.
+But more importantly, it preserves one of Hooks greatest features – composability.
+
 # Drawbacks
 
 - The duplicate key behaviour is a footgun.
@@ -471,8 +480,8 @@ This follows the example established by JSX keys.
 
 - Alternatives for Hook composition with loops in userland: none
 - Alternative for managing an array of external resources:
-  Two separate `useEffect` hooks for allocation and cleanup, plus a `useRef` hook; see listing 3-4.
-  This code is non-idiomatic an error-prone.
+  Two separate `useEffect` Hooks for allocation and cleanup, plus a `useRef` Hook; see listing 3-4.
+  This approach is non-idiomatic, error-prone, and not reusable.
 - Alternative for allocating and closing resources:
   Writing your own resource manager.
   This resource manager must still be synchronized with React.
